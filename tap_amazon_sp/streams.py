@@ -138,6 +138,7 @@ class Orders(IncrementalStream):
     """
     tap_stream_id = 'orders'
     key_properties = ['AmazonOrderId']
+    valid_replication_keys = ['LastUpdatedAt']
 
     def get_records(self, config=None, is_parent=False):
         sample_data = [{

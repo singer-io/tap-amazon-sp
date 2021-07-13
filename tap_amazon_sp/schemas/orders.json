@@ -28,6 +28,12 @@
         "string"
       ]
     },
+    "SellerOrderId": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
     "FulfillmentChannel": {
       "type": [
         "null",
@@ -46,6 +52,26 @@
         "string"
       ]
     },
+    "OrderTotal": {
+      "type": [
+        "null",
+        "object"
+      ],
+      "properties": {
+        "CurrencyCode": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "Amount": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      }
+    },
     "NumberOfItemsShipped": {
       "type": [
         "null",
@@ -56,6 +82,12 @@
       "type": [
         "null",
         "integer"
+      ]
+    },
+    "PaymentMethod": {
+      "type": [
+        "null",
+        "string"
       ]
     },
     "PaymentMethodDetails": {
@@ -140,38 +172,6 @@
       "type": [
         "null",
         "boolean"
-      ]
-    },
-    "SellerOrderId": {
-      "type": [
-        "null",
-        "string"
-      ]
-    },
-    "OrderTotal": {
-      "type": [
-        "null",
-        "object"
-      ],
-      "properties": {
-        "CurrencyCode": {
-          "type": [
-            "null",
-            "string"
-          ]
-        },
-        "Amount": {
-          "type": [
-            "null",
-            "string"
-          ]
-        }
-      }
-    },
-    "PaymentMethod": {
-      "type": [
-        "null",
-        "string"
       ]
     },
     "EarliestDeliveryDate": {

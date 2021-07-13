@@ -9,21 +9,10 @@ LOGGER = singer.get_logger()
 def sync(config, state, catalog):
     """ Sync data from tap source """
 
-    credentials = {
-        'refresh_token': config['refresh_token'],
-        'lwa_app_id': config['client_id'],
-        'lwa_client_secret': config['client_secret'],
-        'aws_access_key': config['aws_access_key'],
-        'aws_secret_key': config['aws_secret_key'],
-        'role_arn': config['role_arn'],
-    }
-
-    client = Client()
-
     with Transformer() as transformer:
         for stream in catalog.get_selected_streams(state):
             tap_stream_id = stream.tap_stream_id
-            stream_obj = STREAMS[tap_stream_id](client)
+            stream_obj = STREAMS[tap_stream_id]()
             stream_schema = stream.schema.to_dict()
             stream_metadata = metadata.to_map(stream.metadata)
 

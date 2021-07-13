@@ -1,13 +1,15 @@
 import csv
+import datetime
+import enum
 import time
 from typing import Any, Iterator
 
 import requests
 import singer
 from singer import Transformer, metrics
+from sp_api.base.marketplaces import Marketplaces
 
 from tap_amazon_sp.client import Client
-
 
 LOGGER = singer.get_logger()
 
@@ -25,14 +27,12 @@ class BaseStream:
     params = {}
     parent = None
 
-    def __init__(self, client: Client):
-        self.client = client
-
-    def get_records(self, config: dict = None, is_parent: bool = False) -> list:
+    def get_records(self, config: dict, stream_schema: dict, is_parent: bool = False) -> list:
         """
         Returns a list of records for that stream.
 
         :param config: The tap config file
+        :param stream_schema: The schema for the stream
         :param is_parent: If true, may change the type of data
             that is returned for a child stream to consume
         :return: list of records
@@ -57,6 +57,57 @@ class BaseStream:
         parent = self.parent(self.client)
         return parent.get_records(config, is_parent=True)
 
+    def get_credentials(self, config: dict) -> dict:
+        """
+        Constructs the credentials object for authenticating with the API.
+
+        :param config: The tap config file
+        :return: A dictionary with secrets
+        """
+        return {
+            'refresh_token': config['refresh_token'],
+            'lwa_app_id': config['client_id'],
+            'lwa_client_secret': config['client_secret'],
+            'aws_access_key': config['aws_access_key'],
+            'aws_secret_key': config['aws_secret_key'],
+            'role_arn': config['role_arn'],
+        }
+
+    def get_marketplace(self, config: dict) -> enum:
+        """
+        Retrieves marketplace enum. Defaults to US if no marketplace provided.
+
+        :param config: The tap config file
+        :return: An enum for the marketplace to be used with the API
+        """
+        marketplace = config.get('marketplace')
+        if marketplace:
+            marketplace.upper()
+            if hasattr(Marketplaces, marketplace):
+                return getattr(Marketplaces, marketplace)
+
+            # If marketplace not part of enum, log message and throw error
+            valid_marketplaces = set()
+            for mp in dir(Marketplaces):
+                if not mp.startswith("__"):
+                    valid_marketplaces.add(mp)
+            LOGGER.critical(f"provided marketplace '{marketplace}' is not "
+                            f"in Marketplaces set: {valid_marketplaces}")
+
+            raise Exception
+
+        return Marketplaces.US
+
+    def check_and_update_missing_fields(self, data, schema):
+        fields = list(schema['properties'].keys())
+
+        if not all(field in data for field in fields):
+            missing_fields = set(fields) - data.keys()
+            for field in missing_fields:
+                data[field] = None
+
+        yield data
+
 
 class IncrementalStream(BaseStream):
     """
@@ -67,9 +118,6 @@ class IncrementalStream(BaseStream):
     """
     replication_method = 'INCREMENTAL'
     batched = False
-
-    def __init__(self, client):
-        super().__init__(client)
 
     def sync(self, state: dict, stream_schema: dict, stream_metadata: dict, config: dict, transformer: Transformer) -> dict:
         """
@@ -86,7 +134,7 @@ class IncrementalStream(BaseStream):
         max_record_value = start_time
 
         with metrics.record_counter(self.tap_stream_id) as counter:
-            for record in self.get_records(config):
+            for record in self.get_records(config, stream_schema):
                 transformed_record = transformer.transform(record, stream_schema, stream_metadata)
                 record_replication_value = singer.utils.strptime_to_utc(transformed_record[self.replication_key])
                 if record_replication_value >= singer.utils.strptime_to_utc(max_record_value):
@@ -107,9 +155,6 @@ class FullTableStream(BaseStream):
     :param client: The API client used extract records from the external source
     """
     replication_method = 'FULL_TABLE'
-
-    def __init__(self, client):
-        super().__init__(client)
 
     def sync(self, state: dict, stream_schema: dict, stream_metadata: dict, config: dict, transformer: Transformer) -> dict:
         """
@@ -138,17 +183,32 @@ class Orders(IncrementalStream):
     """
     tap_stream_id = 'orders'
     key_properties = ['AmazonOrderId']
-    valid_replication_keys = ['LastUpdatedAt']
+    replication_key = 'LastUpdateDate'
+    valid_replication_keys = ['LastUpdateDate']
 
-    def get_records(self, config=None, is_parent=False):
-        sample_data = [{
-            'string_field': 'some string',
-            'datetime_field': '2021-04-23T17:05:41.762537+00:00',
-            'integer_field': 3,
-            'double_field': 22.78,
-        }]
+    def get_records(self, config, stream_schema, is_parent=False):
+        from sp_api.api import Orders
 
-        yield from sample_data
+        credentials = self.get_credentials(config)
+        marketplace = self.get_marketplace(config)
+
+        # TODO: hardcoding bookmark for now
+        last_updated_after = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat()
+        client = Orders(credentials=credentials, marketplace=marketplace)
+        paginate = True
+        next_token = None
+
+        with metrics.http_request_timer('/orders/v0/orders') as timer:
+            while paginate:
+                response = client.get_orders(LastUpdatedAfter=last_updated_after, NextToken=next_token)
+                timer.tags[metrics.Tag.http_status_code] = 200
+                next_token = response.next_token
+                paginate = True if next_token else False
+
+                # transformed = (self.check_and_update_missing_fields(data, stream_schema)
+                #                for data in response.payload.get('Orders'))
+
+                yield from response.payload.get('Orders')
 
 
 STREAMS = {

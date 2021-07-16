@@ -100,13 +100,34 @@ class BaseStream:
 
     def check_and_update_missing_fields(self, data, schema):
         fields = list(schema['properties'].keys())
+        properties = schema['properties']
 
         if not all(field in data for field in fields):
             missing_fields = set(fields) - data.keys()
             for field in missing_fields:
-                data[field] = None
+                data[field] = self._get_empty_field_type(field, properties)
 
         yield data
+
+    # TODO: make this more robust
+    def _get_empty_field_type(self, field, properties):
+        mapping = {
+            'string': '',
+            'boolean': False,
+            'array': [],
+            'integer': 0,
+            'float': 0,
+            'object': {}
+        }
+
+        types = properties[field]
+
+        if "null" in types:
+            types.remove("null")
+
+        property_type = types[0]
+
+        return mapping[property_type]
 
 
 class IncrementalStream(BaseStream):
@@ -205,10 +226,10 @@ class Orders(IncrementalStream):
                 next_token = response.next_token
                 paginate = True if next_token else False
 
-                # transformed = (self.check_and_update_missing_fields(data, stream_schema)
-                #                for data in response.payload.get('Orders'))
+                transformed = (self.check_and_update_missing_fields(data, stream_schema)
+                               for data in response.payload.get('Orders'))
 
-                yield from response.payload.get('Orders')
+                yield from transformed
 
 
 STREAMS = {

@@ -4,12 +4,14 @@ import enum
 import time
 from typing import Any, Iterator
 
-import requests
+import backoff
 import singer
 from singer import Transformer, metrics
+from sp_api.api import Orders
 from sp_api.base.marketplaces import Marketplaces
 
-from tap_amazon_sp.client import Client
+from tap_amazon_sp.exceptions import (AmazonSPConnectionError,
+                                      AmazonSPRateLimitError)
 
 LOGGER = singer.get_logger()
 
@@ -27,7 +29,7 @@ class BaseStream:
     params = {}
     parent = None
 
-    def get_records(self, config: dict, stream_schema: dict, is_parent: bool = False) -> list:
+    def get_records(self, config: dict, is_parent: bool = False) -> list:
         """
         Returns a list of records for that stream.
 
@@ -54,7 +56,7 @@ class BaseStream:
         :param config: The tap config file
         :return: A list of records
         """
-        parent = self.parent(self.client)
+        parent = self.parent()
         return parent.get_records(config, is_parent=True)
 
     def get_credentials(self, config: dict) -> dict:
@@ -155,7 +157,7 @@ class IncrementalStream(BaseStream):
         max_record_value = start_time
 
         with metrics.record_counter(self.tap_stream_id) as counter:
-            for record in self.get_records(config, stream_schema):
+            for record in self.get_records(config):
                 transformed_record = transformer.transform(record, stream_schema, stream_metadata)
                 record_replication_value = singer.utils.strptime_to_utc(transformed_record[self.replication_key])
                 if record_replication_value >= singer.utils.strptime_to_utc(max_record_value):
@@ -198,7 +200,7 @@ class FullTableStream(BaseStream):
         return state
 
 
-class Orders(IncrementalStream):
+class OrdersStream(IncrementalStream):
     """
     Gets records for a sample stream.
     """
@@ -207,14 +209,16 @@ class Orders(IncrementalStream):
     replication_key = 'LastUpdateDate'
     valid_replication_keys = ['LastUpdateDate']
 
-    def get_records(self, config, stream_schema, is_parent=False):
-        from sp_api.api import Orders
+    @backoff.on_exception(backoff.expo,
+                          (AmazonSPRateLimitError, AmazonSPRateLimitError),
+                          max_tries=3)
+    def get_records(self, config, is_parent=False):
 
         credentials = self.get_credentials(config)
         marketplace = self.get_marketplace(config)
 
         # TODO: hardcoding bookmark for now
-        last_updated_after = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat()
+        last_updated_after = (datetime.datetime.utcnow() - datetime.timedelta(days=2)).isoformat()
         client = Orders(credentials=credentials, marketplace=marketplace)
         paginate = True
         next_token = None
@@ -226,12 +230,40 @@ class Orders(IncrementalStream):
                 next_token = response.next_token
                 paginate = True if next_token else False
 
-                transformed = (self.check_and_update_missing_fields(data, stream_schema)
-                               for data in response.payload.get('Orders'))
+                if is_parent:
+                    yield from (item['AmazonOrderId'] for item
+                                in response.payload['Orders'])
+                    continue
 
-                yield from transformed
+                # transformed = (self.check_and_update_missing_fields(data, stream_schema)
+                #                for data in response.payload.get('Orders'))
+
+                # yield from transformed
+                yield from response.payload
+
+
+class OrderItems(FullTableStream):
+    tap_stream_id = 'order_items'
+    key_properties = ['']
+    parent = OrdersStream
+
+    @backoff.on_exception(backoff.expo,
+                          (AmazonSPRateLimitError, AmazonSPRateLimitError),
+                          max_tries=3)
+    def get_records(self, config: dict, is_parent: bool = False) -> list:
+
+        credentials = self.get_credentials(config)
+        marketplace = self.get_marketplace(config)
+
+        client = Orders(credentials=credentials, marketplace=marketplace)
+        with metrics.http_request_timer('/orders/v0/orders/{order_id}/orderItems') as timer:
+            for order_id in self.get_parent_data(config):
+                response = client.get_order_items(order_id=order_id).payload
+                timer.tags[metrics.Tag.http_status_code] = 200
+                yield response
 
 
 STREAMS = {
-    'orders': Orders,
+    'orders': OrdersStream,
+    'order_items': OrderItems,
 }

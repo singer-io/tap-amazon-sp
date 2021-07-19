@@ -110,3 +110,5 @@ state.json
 *config*.json
 *state*.json
 target*.json
+
+generate_schema.py

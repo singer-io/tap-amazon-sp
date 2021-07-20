@@ -12,7 +12,7 @@ def sync(config, state, catalog):
     with Transformer() as transformer:
         for stream in catalog.get_selected_streams(state):
             tap_stream_id = stream.tap_stream_id
-            stream_obj = STREAMS[tap_stream_id]()
+            stream_obj = STREAMS[tap_stream_id](config)
             stream_schema = stream.schema.to_dict()
             stream_metadata = metadata.to_map(stream.metadata)
 
@@ -28,7 +28,7 @@ def sync(config, state, catalog):
                 stream.replication_key
             )
 
-            state = stream_obj.sync(state, stream_schema, stream_metadata, config, transformer)
+            state = stream_obj.sync(state, stream_schema, stream_metadata, transformer)
             singer.write_state(state)
 
     state = singer.set_currently_syncing(state, None)

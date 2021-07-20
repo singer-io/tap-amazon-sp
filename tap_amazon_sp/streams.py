@@ -2,18 +2,25 @@ import csv
 import datetime
 import enum
 import time
-from typing import Any, Iterator
+from typing import Any, Iterator, Tuple
 
 import backoff
 import singer
 from singer import Transformer, metrics
 from sp_api.api import Orders
+from sp_api.base import exceptions
+from sp_api.base.exceptions import SellingApiRequestThrottledException
 from sp_api.base.marketplaces import Marketplaces
 
-from tap_amazon_sp.exceptions import (AmazonSPConnectionError,
-                                      AmazonSPRateLimitError)
-
 LOGGER = singer.get_logger()
+
+
+def log_backoff(details):
+    '''
+    Logs a backoff retry message
+    '''
+    LOGGER.warning(f'Error receiving data from Amazon SP API. Sleeping {details["wait"]:.1f} seconds before trying again')
+
 
 class BaseStream:
     """
@@ -29,11 +36,13 @@ class BaseStream:
     params = {}
     parent = None
 
-    def get_records(self, config: dict, is_parent: bool = False) -> list:
+    def __init__(self, config: dict) -> None:
+        self.config = config
+
+    def get_records(self, is_parent: bool = False) -> list:
         """
         Returns a list of records for that stream.
 
-        :param config: The tap config file
         :param stream_schema: The schema for the stream
         :param is_parent: If true, may change the type of data
             that is returned for a child stream to consume
@@ -49,40 +58,37 @@ class BaseStream:
         """
         self.params = params
 
-    def get_parent_data(self, config: dict = None) -> list:
+    def get_parent_data(self) -> list:
         """
         Returns a list of records from the parent stream.
 
-        :param config: The tap config file
         :return: A list of records
         """
-        parent = self.parent()
-        return parent.get_records(config, is_parent=True)
+        parent = self.parent(self.config)
+        return parent.get_records(is_parent=True)
 
-    def get_credentials(self, config: dict) -> dict:
+    def get_credentials(self) -> dict:
         """
         Constructs the credentials object for authenticating with the API.
 
-        :param config: The tap config file
         :return: A dictionary with secrets
         """
         return {
-            'refresh_token': config['refresh_token'],
-            'lwa_app_id': config['client_id'],
-            'lwa_client_secret': config['client_secret'],
-            'aws_access_key': config['aws_access_key'],
-            'aws_secret_key': config['aws_secret_key'],
-            'role_arn': config['role_arn'],
+            'refresh_token': self.config['refresh_token'],
+            'lwa_app_id': self.config['client_id'],
+            'lwa_client_secret': self.config['client_secret'],
+            'aws_access_key': self.config['aws_access_key'],
+            'aws_secret_key': self.config['aws_secret_key'],
+            'role_arn': self.config['role_arn'],
         }
 
-    def get_marketplace(self, config: dict) -> enum:
+    def get_marketplace(self) -> enum:
         """
         Retrieves marketplace enum. Defaults to US if no marketplace provided.
 
-        :param config: The tap config file
         :return: An enum for the marketplace to be used with the API
         """
-        marketplace = config.get('marketplace')
+        marketplace = self.config.get('marketplace')
         if marketplace:
             marketplace.upper()
             if hasattr(Marketplaces, marketplace):
@@ -142,22 +148,21 @@ class IncrementalStream(BaseStream):
     replication_method = 'INCREMENTAL'
     batched = False
 
-    def sync(self, state: dict, stream_schema: dict, stream_metadata: dict, config: dict, transformer: Transformer) -> dict:
+    def sync(self, state: dict, stream_schema: dict, stream_metadata: dict, transformer: Transformer) -> dict:
         """
         The sync logic for an incremental stream.
 
         :param state: A dictionary representing singer state
         :param stream_schema: A dictionary containing the stream schema
         :param stream_metadata: A dictionnary containing stream metadata
-        :param config: A dictionary containing tap config data
         :param transformer: A singer Transformer object
         :return: State data in the form of a dictionary
         """
-        start_time = singer.get_bookmark(state, self.tap_stream_id, self.replication_key, config['start_date'])
+        start_time = singer.get_bookmark(state, self.tap_stream_id, self.replication_key, self.config['start_date'])
         max_record_value = start_time
 
         with metrics.record_counter(self.tap_stream_id) as counter:
-            for record in self.get_records(config):
+            for record in self.get_records():
                 transformed_record = transformer.transform(record, stream_schema, stream_metadata)
                 record_replication_value = singer.utils.strptime_to_utc(transformed_record[self.replication_key])
                 if record_replication_value >= singer.utils.strptime_to_utc(max_record_value):
@@ -179,19 +184,18 @@ class FullTableStream(BaseStream):
     """
     replication_method = 'FULL_TABLE'
 
-    def sync(self, state: dict, stream_schema: dict, stream_metadata: dict, config: dict, transformer: Transformer) -> dict:
+    def sync(self, state: dict, stream_schema: dict, stream_metadata: dict, transformer: Transformer) -> dict:
         """
         The sync logic for an full table stream.
 
         :param state: A dictionary representing singer state
         :param stream_schema: A dictionary containing the stream schema
         :param stream_metadata: A dictionnary containing stream metadata
-        :param config: A dictionary containing tap config data
         :param transformer: A singer Transformer object
         :return: State data in the form of a dictionary
         """
         with metrics.record_counter(self.tap_stream_id) as counter:
-            for record in self.get_records(config):
+            for record in self.get_records():
                 transformed_record = transformer.transform(record, stream_schema, stream_metadata)
                 singer.write_record(self.tap_stream_id, transformed_record)
                 counter.increment()
@@ -210,12 +214,13 @@ class OrdersStream(IncrementalStream):
     valid_replication_keys = ['LastUpdateDate']
 
     @backoff.on_exception(backoff.expo,
-                          (AmazonSPRateLimitError, AmazonSPRateLimitError),
-                          max_tries=3)
-    def get_records(self, config, is_parent=False):
+                          SellingApiRequestThrottledException,
+                          max_tries=3,
+                          on_backoff=log_backoff)
+    def get_records(self, is_parent=False):
 
-        credentials = self.get_credentials(config)
-        marketplace = self.get_marketplace(config)
+        credentials = self.get_credentials()
+        marketplace = self.get_marketplace()
 
         # TODO: hardcoding bookmark for now
         last_updated_after = (datetime.datetime.utcnow() - datetime.timedelta(days=2)).isoformat()
@@ -225,8 +230,14 @@ class OrdersStream(IncrementalStream):
 
         with metrics.http_request_timer('/orders/v0/orders') as timer:
             while paginate:
-                response = client.get_orders(LastUpdatedAfter=last_updated_after, NextToken=next_token)
-                timer.tags[metrics.Tag.http_status_code] = 200
+                try:
+                    response = client.get_orders(LastUpdatedAfter=last_updated_after, NextToken=next_token)
+                    timer.tags[metrics.Tag.http_status_code] = 200
+                except SellingApiRequestThrottledException as e:
+                    timer.tags[metrics.Tag.http_status_code] = 429
+
+                    raise e
+
                 next_token = response.next_token
                 paginate = True if next_token else False
 
@@ -242,24 +253,33 @@ class OrdersStream(IncrementalStream):
                 yield from response.payload
 
 
+# TODO: check if running Orders stream before OrderItems stream will affect the results
 class OrderItems(FullTableStream):
     tap_stream_id = 'order_items'
     key_properties = ['']
     parent = OrdersStream
 
     @backoff.on_exception(backoff.expo,
-                          (AmazonSPRateLimitError, AmazonSPRateLimitError),
-                          max_tries=3)
-    def get_records(self, config: dict, is_parent: bool = False) -> list:
+                          SellingApiRequestThrottledException,
+                          max_tries=3,
+                          on_backoff=log_backoff)
+    def get_order_items(self, client: Orders, order_id: str):
+        return client.get_order_items(order_id=order_id).payload
 
-        credentials = self.get_credentials(config)
-        marketplace = self.get_marketplace(config)
+    def get_records(self, is_parent: bool = False) -> list:
+
+        credentials = self.get_credentials()
+        marketplace = self.get_marketplace()
 
         client = Orders(credentials=credentials, marketplace=marketplace)
-        with metrics.http_request_timer('/orders/v0/orders/{order_id}/orderItems') as timer:
-            for order_id in self.get_parent_data(config):
-                response = client.get_order_items(order_id=order_id).payload
+        for order_id in self.get_parent_data():
+            with metrics.http_request_timer(f'/orders/v0/orders/{order_id}/orderItems') as timer:
+                response = self.get_order_items(client, order_id)
                 timer.tags[metrics.Tag.http_status_code] = 200
+
+                # Endpoint allows for 1 request per second
+                time.sleep(1)
+
                 yield response
 
 

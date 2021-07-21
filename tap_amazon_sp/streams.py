@@ -19,6 +19,25 @@ def log_backoff(details):
     LOGGER.warning(f'Error receiving data from Amazon SP API. Sleeping {details["wait"]:.1f} seconds before trying again')
 
 
+def calculate_sleep_time(headers: dict):
+    """
+    Checks the rate limit headers and returns number of seconds
+    to sleep in between calls.
+    """
+    rate_limit = headers.get('x-amzn-RateLimit-Limit', '100')
+    try:
+        rate_limit_value = float(rate_limit)
+    except ValueError:
+        rate_limit_value = 100
+
+    # Set minimum rate limit value
+    # rate_limit_value = max(0.5, rate_limit_value)
+
+    LOGGER.info(f"x-amzn-RateLimit-Limit: {headers.get('x-amzn-RateLimit-Limit')}")
+
+    return 1 / rate_limit_value
+
+
 class BaseStream:
     """
     A base class representing singer streams.
@@ -253,7 +272,7 @@ class OrdersStream(IncrementalStream):
 # TODO: check if running Orders stream before OrderItems stream will affect the results
 class OrderItems(FullTableStream):
     tap_stream_id = 'order_items'
-    key_properties = ['']
+    key_properties = ['AmazonOrderId', 'OrderItemId']
     parent = OrdersStream
 
     @backoff.on_exception(backoff.expo,
@@ -280,7 +299,40 @@ class OrderItems(FullTableStream):
                 yield response
 
 
+# TODO: check if running Orders stream before Order stream will affect the resultsclass OrderItems(FullTableStream):
+class OrderStream(FullTableStream):
+    tap_stream_id = 'order'
+    key_properties = ['AmazonOrderId']
+    parent = OrdersStream
+
+    @backoff.on_exception(backoff.expo,
+                          SellingApiRequestThrottledException,
+                          max_tries=3,
+                          on_backoff=log_backoff)
+    def get_order(self, client: Orders, order_id: str):
+        return client.get_order(order_id=order_id)
+
+    def get_records(self, is_parent: bool = False) -> list:
+
+        credentials = self.get_credentials()
+        marketplace = self.get_marketplace()
+
+        client = Orders(credentials=credentials, marketplace=marketplace)
+        for order_id in self.get_parent_data():
+            with metrics.http_request_timer(f'/orders/v0/orders/{order_id}') as timer:
+                response = self.get_order(client, order_id)
+                timer.tags[metrics.Tag.http_status_code] = 200
+
+                # Check headers for rate limit and sleep in between calls
+                sleep_time = calculate_sleep_time(response.headers)
+                LOGGER.info(f"sleeping for {round(sleep_time, 2)} seconds")
+                time.sleep(sleep_time)
+
+                yield response.payload
+
+
 STREAMS = {
+    'order': OrderStream,
     'orders': OrdersStream,
     'order_items': OrderItems,
 }

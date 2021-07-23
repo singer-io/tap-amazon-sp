@@ -1,3 +1,6 @@
+import datetime
+from typing import Tuple
+
 import singer
 
 LOGGER = singer.get_logger()
@@ -36,3 +39,14 @@ def format_date(start_date: str) -> str:
     """
     return singer.utils.strptime_to_utc(start_date) \
                 .replace(tzinfo=None).isoformat()
+
+
+def create_date_interval(start_date: datetime.datetime,
+                         end_date: datetime.datetime,
+                         hours=1) -> Tuple[datetime.datetime, datetime.datetime]:
+    date = (start_date - datetime.timedelta(hours=hours))
+    return (_prepare_datetime(date), _prepare_datetime(end_date))
+
+
+def _prepare_datetime(datetimeobj: datetime.datetime) -> str:
+    return datetimeobj.astimezone().replace(microsecond=0).isoformat()

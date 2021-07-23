@@ -1,0 +1,72 @@
+{
+  "type": [
+    "null",
+    "object"
+  ],
+  "properties": {
+    "interval": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "unitCount": {
+      "type": [
+        "null",
+        "integer"
+      ]
+    },
+    "orderItemCount": {
+      "type": [
+        "null",
+        "integer"
+      ]
+    },
+    "orderCount": {
+      "type": [
+        "null",
+        "integer"
+      ]
+    },
+    "averageUnitPrice": {
+      "type": [
+        "null",
+        "object"
+      ],
+      "properties": {
+        "amount": {
+          "type": [
+            "null",
+            "number"
+          ]
+        },
+        "currencyCode": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      }
+    },
+    "totalSales": {
+      "type": [
+        "null",
+        "object"
+      ],
+      "properties": {
+        "amount": {
+          "type": [
+            "null",
+            "number"
+          ]
+        },
+        "currencyCode": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      }
+    }
+  }
+}

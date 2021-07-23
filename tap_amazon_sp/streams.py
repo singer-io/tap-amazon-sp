@@ -9,33 +9,10 @@ from sp_api.api import Orders
 from sp_api.base.exceptions import SellingApiRequestThrottledException
 from sp_api.base.marketplaces import Marketplaces
 
+from tap_amazon_sp.helpers import (calculate_sleep_time, format_date,
+                                   log_backoff)
+
 LOGGER = singer.get_logger()
-
-
-def log_backoff(details):
-    '''
-    Logs a backoff retry message
-    '''
-    LOGGER.warning(f'Error receiving data from Amazon SP API. Sleeping {details["wait"]:.1f} seconds before trying again')
-
-
-def calculate_sleep_time(headers: dict):
-    """
-    Checks the rate limit headers and returns number of seconds
-    to sleep in between calls.
-    """
-    rate_limit = headers.get('x-amzn-RateLimit-Limit', '100')
-    try:
-        rate_limit_value = float(rate_limit)
-    except ValueError:
-        rate_limit_value = 100
-
-    # Set minimum rate limit value
-    # rate_limit_value = max(0.5, rate_limit_value)
-
-    LOGGER.info(f"x-amzn-RateLimit-Limit: {headers.get('x-amzn-RateLimit-Limit')}")
-
-    return 1 / rate_limit_value
 
 
 class BaseStream:
@@ -174,11 +151,11 @@ class IncrementalStream(BaseStream):
         :param transformer: A singer Transformer object
         :return: State data in the form of a dictionary
         """
-        start_time = singer.get_bookmark(state, self.tap_stream_id, self.replication_key, self.config['start_date'])
-        max_record_value = start_time
+        start_date = singer.get_bookmark(state, self.tap_stream_id, self.replication_key, self.config['start_date'])
+        max_record_value = start_date
 
         with metrics.record_counter(self.tap_stream_id) as counter:
-            for record in self.get_records():
+            for record in self.get_records(start_date):
                 transformed_record = transformer.transform(record, stream_schema, stream_metadata)
                 record_replication_value = singer.utils.strptime_to_utc(transformed_record[self.replication_key])
                 if record_replication_value >= singer.utils.strptime_to_utc(max_record_value):
@@ -233,13 +210,12 @@ class OrdersStream(IncrementalStream):
                           SellingApiRequestThrottledException,
                           max_tries=3,
                           on_backoff=log_backoff)
-    def get_records(self, is_parent=False):
+    def get_records(self, start_date, is_parent=False):
 
         credentials = self.get_credentials()
         marketplace = self.get_marketplace()
+        start_date = format_date(start_date)
 
-        # TODO: hardcoding bookmark for now
-        last_updated_after = (datetime.datetime.utcnow() - datetime.timedelta(days=2)).isoformat()
         client = Orders(credentials=credentials, marketplace=marketplace)
         paginate = True
         next_token = None
@@ -247,7 +223,7 @@ class OrdersStream(IncrementalStream):
         with metrics.http_request_timer('/orders/v0/orders') as timer:
             while paginate:
                 try:
-                    response = client.get_orders(LastUpdatedAfter=last_updated_after, NextToken=next_token)
+                    response = client.get_orders(LastUpdatedAfter=start_date, NextToken=next_token)
                     timer.tags[metrics.Tag.http_status_code] = 200
                 except SellingApiRequestThrottledException as e:
                     timer.tags[metrics.Tag.http_status_code] = 429
@@ -266,7 +242,7 @@ class OrdersStream(IncrementalStream):
                 #                for data in response.payload.get('Orders'))
 
                 # yield from transformed
-                yield from response.payload
+                yield from response.payload['Orders']
 
 
 # TODO: check if running Orders stream before OrderItems stream will affect the results

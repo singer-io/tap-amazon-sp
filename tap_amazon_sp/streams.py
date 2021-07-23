@@ -1,13 +1,17 @@
 import datetime
 import enum
+
+from singer.utils import update_state
+from generate_schema import create_date_interval
 import time
 
 import backoff
 import singer
 from singer import Transformer, metrics
-from sp_api.api import Orders
+from sp_api.api import Orders, Sales
 from sp_api.base.exceptions import SellingApiRequestThrottledException
 from sp_api.base.marketplaces import Marketplaces
+from sp_api.base.sales_enum import Granularity
 
 from tap_amazon_sp.helpers import (calculate_sleep_time, format_date,
                                    log_backoff)
@@ -83,7 +87,7 @@ class BaseStream:
         """
         marketplace = self.config.get('marketplace')
         if marketplace:
-            marketplace.upper()
+            marketplace = marketplace.upper()
             if hasattr(Marketplaces, marketplace):
                 return getattr(Marketplaces, marketplace)
 
@@ -98,6 +102,30 @@ class BaseStream:
             raise Exception
 
         return Marketplaces.US
+
+    def get_granularity(self) -> enum:
+        """
+        Retrieves granularity enum. Defaults to DAY if no granularity provided.
+
+        :return: An enum for the granularity to be used with the API
+        """
+        granularity = self.config.get('sales_data_granularity')
+        if granularity:
+            granularity = granularity.upper()
+            if hasattr(Granularity, granularity):
+                return getattr(Granularity, granularity)
+
+            # If granularity not part of enum, log message and throw error
+            valid_granularities = set()
+            for mp in dir(Granularity):
+                if not mp.startswith("__"):
+                    valid_granularities.add(mp)
+            LOGGER.critical(f"provided marketplace '{granularity}' is not "
+                            f"in Granularity set: {valid_granularities}")
+
+            raise Exception
+
+        return Granularity.DAY
 
     def check_and_update_missing_fields(self, data, schema):
         fields = list(schema['properties'].keys())
@@ -307,8 +335,54 @@ class OrderStream(FullTableStream):
                 yield response.payload
 
 
+class SalesStream(IncrementalStream):
+    tap_stream_id = 'sales'
+    key_properties = ['interval']
+    replication_key = 'retrieved'
+    valid_replication_keys = ['retrieved']
+
+    @backoff.on_exception(backoff.expo,
+                          SellingApiRequestThrottledException,
+                          max_tries=3,
+                          on_backoff=log_backoff)
+    def get_records(self, start_date, is_parent=False):
+
+        credentials = self.get_credentials()
+        marketplace = self.get_marketplace()
+        granularity = self.get_granularity()
+        start_date = format_date(start_date)
+        start_date_dt = singer.utils.strptime_to_utc(start_date)
+        end_date_dt = datetime.datetime.utcnow()
+        end_date = end_date_dt.isoformat()
+
+        client = Sales(credentials=credentials, marketplace=marketplace)
+        paginate = True
+        next_token = None
+        interval = create_date_interval(start_date_dt, end_date_dt)
+
+        with metrics.http_request_timer('/sales/v1/orderMetrics') as timer:
+            while paginate:
+                try:
+                    response = client.get_order_metrics(interval=interval, granularity=granularity)
+                    timer.tags[metrics.Tag.http_status_code] = 200
+                except SellingApiRequestThrottledException as e:
+                    timer.tags[metrics.Tag.http_status_code] = 429
+
+                    raise e
+
+                next_token = response.next_token
+                paginate = True if next_token else False
+
+                for record in response.payload:
+                    record.update({'retrieved': end_date})
+
+                yield from response.payload
+
+
+
 STREAMS = {
     'order': OrderStream,
     'orders': OrdersStream,
     'order_items': OrderItems,
+    'sales': SalesStream,
 }

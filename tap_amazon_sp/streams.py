@@ -1,7 +1,6 @@
 import datetime
 import enum
 
-from singer.utils import update_state
 from generate_schema import create_date_interval
 import time
 

@@ -112,3 +112,6 @@ state.json
 target*.json
 
 generate_schema.py
+
+# CSV files
+.csv

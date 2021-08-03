@@ -13,7 +13,7 @@ from sp_api.base.exceptions import SellingApiRequestThrottledException
 from sp_api.base.marketplaces import Marketplaces
 from sp_api.base.sales_enum import Granularity
 
-from tap_amazon_sp.helpers import (calculate_sleep_time, format_date,
+from tap_amazon_sp.helpers import (calculate_sleep_time, flatten_order_items, format_date,
                                    log_backoff)
 
 LOGGER = singer.get_logger()
@@ -306,7 +306,9 @@ class OrderItems(FullTableStream):
                 # Endpoint allows for 1 request per second
                 time.sleep(1)
 
-                yield response
+                order_items = flatten_order_items(response)
+
+                yield from order_items
 
 
 # TODO: check if running Orders stream before Order stream will affect the resultsclass OrderItems(FullTableStream):

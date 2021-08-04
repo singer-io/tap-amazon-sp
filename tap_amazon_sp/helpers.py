@@ -9,6 +9,7 @@ def log_backoff(details):
     """
     Logs a backoff retry message
     """
+    # pylint: disable=logging-fstring-interpolation
     LOGGER.warning('Error receiving data from Amazon SP API. '
                   f'Sleeping {details["wait"]:.1f} seconds before trying again')
 
@@ -27,6 +28,7 @@ def calculate_sleep_time(headers: dict) -> float:
     # Ensure value is not 0 to avoid ZeroDivisionError
     rate_limit_value = 0.1 if rate_limit_value == 0 else rate_limit_value
 
+    # pylint: disable=logging-fstring-interpolation
     LOGGER.info(f"x-amzn-RateLimit-Limit: "
                 f"{headers.get('x-amzn-RateLimit-Limit')}")
 

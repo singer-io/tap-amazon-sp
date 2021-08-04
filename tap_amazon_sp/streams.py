@@ -1,9 +1,7 @@
 import datetime
 import enum
-from functools import lru_cache
-
-from generate_schema import create_date_interval
 import time
+from functools import lru_cache
 
 import backoff
 import singer
@@ -13,8 +11,8 @@ from sp_api.base.exceptions import SellingApiRequestThrottledException
 from sp_api.base.marketplaces import Marketplaces
 from sp_api.base.sales_enum import Granularity
 
-from tap_amazon_sp.helpers import (flatten_order_items, format_date,
-                                   log_backoff)
+from generate_schema import create_date_interval
+from tap_amazon_sp.helpers import flatten_order_items, format_date, log_backoff
 
 LOGGER = singer.get_logger()
 
@@ -36,7 +34,7 @@ class BaseStream:
     def __init__(self, config: dict) -> None:
         self.config = config
 
-    def get_records(self, start_date: str, state: dict, is_parent: bool = False) -> list:
+    def get_records(self, start_date: str, is_parent: bool = False) -> list:
         """
         Returns a list of records for that stream.
 
@@ -96,6 +94,7 @@ class BaseStream:
             for mp in dir(Marketplaces):
                 if not mp.startswith("__"):
                     valid_marketplaces.add(mp)
+            # pylint: disable=logging-fstring-interpolation
             LOGGER.critical(f"provided marketplace '{marketplace}' is not "
                             f"in Marketplaces set: {valid_marketplaces}")
 
@@ -120,43 +119,13 @@ class BaseStream:
             for mp in dir(Granularity):
                 if not mp.startswith("__"):
                     valid_granularities.add(mp)
+            # pylint: disable=logging-fstring-interpolation
             LOGGER.critical(f"provided marketplace '{granularity}' is not "
                             f"in Granularity set: {valid_granularities}")
 
             raise Exception
 
         return Granularity.DAY
-
-    def check_and_update_missing_fields(self, data, schema):
-        fields = list(schema['properties'].keys())
-        properties = schema['properties']
-
-        if not all(field in data for field in fields):
-            missing_fields = set(fields) - data.keys()
-            for field in missing_fields:
-                data[field] = self._get_empty_field_type(field, properties)
-
-        yield data
-
-    # TODO: make this more robust
-    def _get_empty_field_type(self, field, properties):
-        mapping = {
-            'string': '',
-            'boolean': False,
-            'array': [],
-            'integer': 0,
-            'float': 0,
-            'object': {}
-        }
-
-        types = properties[field]
-
-        if "null" in types:
-            types.remove("null")
-
-        property_type = types[0]
-
-        return mapping[property_type]
 
 
 class IncrementalStream(BaseStream):
@@ -235,7 +204,8 @@ class OrdersStream(IncrementalStream):
     valid_replication_keys = ['LastUpdateDate']
 
     @lru_cache
-    def get_orders(self, client, start_date, next_token):
+    @staticmethod
+    def get_orders(client, start_date, next_token):
         return client.get_orders(LastUpdatedAfter=start_date,
                                  NextToken=next_token)
 
@@ -264,7 +234,7 @@ class OrdersStream(IncrementalStream):
                     raise e
 
                 next_token = response.next_token
-                paginate = True if next_token else False
+                paginate = next_token is None
 
                 if is_parent:
                     yield from ((item['AmazonOrderId'], item['LastUpdateDate'])
@@ -285,7 +255,8 @@ class OrderItems(IncrementalStream):
                           SellingApiRequestThrottledException,
                           max_tries=3,
                           on_backoff=log_backoff)
-    def get_order_items(self, client: Orders, order_id: str):
+    @staticmethod
+    def get_order_items(client: Orders, order_id: str):
         return client.get_order_items(order_id=order_id).payload
 
     def get_records(self, start_date: str) -> list:
@@ -344,7 +315,7 @@ class SalesStream(IncrementalStream):
                     raise e
 
                 next_token = response.next_token
-                paginate = True if next_token else False
+                paginate = next_token is None
 
                 for record in response.payload:
                     record.update({'retrieved': end_date})

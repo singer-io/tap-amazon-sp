@@ -32,7 +32,7 @@ The tap accepts the following config items:
 | role_arn               | string | yes      | [IAM Policies and Entities](https://github.com/amzn/selling-partner-api-docs/blob/main/guides/en-US/developer-guide/SellingPartnerApiDeveloperGuide.md#creating-and-configuring-iam-policies-and-entities) |
 | start_date             | string | yes      | ISO-8601  Example: "2021-08-03" or "2021-08-03T23:29:19+00:00"                                                                                                                                             |
 | marketplace            | string | no       | [Marketplace Country Code](https://github.com/amzn/selling-partner-api-docs/blob/main/guides/en-US/developer-guide/SellingPartnerApiDeveloperGuide.md#marketplaceid-values) value. Default is "US".        |
-| sales_data_granularity | string | no       | [Granularity for sales stream](https://github.com/amzn/selling-partner-api-docs/blob/main/references/sales-api/sales.md#granularity) for sales aggregation.                                                                 |
+| sales_data_granularity | string | no       | [Granularity for sales stream](https://github.com/amzn/selling-partner-api-docs/blob/main/references/sales-api/sales.md#granularity) for sales aggregation. Default is "DAY".                                                                 |
 
 ## Quick Start
 

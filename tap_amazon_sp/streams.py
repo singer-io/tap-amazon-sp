@@ -120,7 +120,7 @@ class BaseStream:
                 if not mp.startswith("__"):
                     valid_granularities.add(mp)
             # pylint: disable=logging-fstring-interpolation
-            LOGGER.critical(f"provided marketplace '{granularity}' is not "
+            LOGGER.critical(f"provided granularity '{granularity}' is not "
                             f"in Granularity set: {valid_granularities}")
 
             raise Exception

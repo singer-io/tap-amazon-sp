@@ -52,31 +52,16 @@ def _prepare_datetime(datetimeobj: datetime.datetime) -> str:
     return datetimeobj.astimezone().replace(microsecond=0).isoformat()
 
 
-def flatten_order_items(response: dict) -> List[dict]:
+def flatten_order_items(response: dict, date_to_add: str) -> List[dict]:
     """
-    {'OrderItems': [{'ProductInfo': {'NumberOfItems': '1'},
-        'BuyerInfo': {},
-        'ItemTax': {'CurrencyCode': 'GBP', 'Amount': '7.50'},
-        'QuantityShipped': 1,
-        'ItemPrice': {'CurrencyCode': 'GBP', 'Amount': '45.00'},
-        'ASIN': 'B07YG6HCQR',
-        'SellerSKU': '10403519',
-        'Title': 'Simba Memory Foam Pillow, 42 x 66 cm - Soft, Supportive & Hypoallergenic',
-        'IsGift': 'false',
-        'ConditionSubtypeId': 'New',
-        'IsTransparency': False,
-        'QuantityOrdered': 1,
-        'PromotionDiscountTax': {'CurrencyCode': 'GBP', 'Amount': '0.00'},
-        'ConditionId': 'New',
-        'PromotionDiscount': {'CurrencyCode': 'GBP', 'Amount': '0.00'},
-        'OrderItemId': '38968241511099'}],
-    'AmazonOrderId': '203-7826745-8725929'}
+    Flatten a dictionary of nested items.
     """
     order_items = []
     amazon_order_id = response.get("AmazonOrderId")
 
     for order_item in response['OrderItems']:
         order_item['AmazonOrderId'] = amazon_order_id
+        order_item['OrderLastUpdateDate'] = date_to_add
         order_items.append(order_item)
 
     return order_items

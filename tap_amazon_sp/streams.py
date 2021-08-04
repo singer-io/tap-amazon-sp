@@ -55,15 +55,14 @@ class BaseStream:
         """
         self.params = params
 
-    def get_parent_data(self, state) -> list:
+    def get_parent_data(self, start_date: str = None) -> list:
         """
         Returns a list of records from the parent stream.
 
         :return: A list of records
         """
         parent = self.parent(self.config)
-        start_date = singer.get_bookmark(state, parent.tap_stream_id, parent.replication_key, parent.config['start_date'])
-        return parent.get_records(start_date, state, is_parent=True)
+        return parent.get_records(start_date, is_parent=True)
 
     def get_credentials(self) -> dict:
         """
@@ -184,7 +183,7 @@ class IncrementalStream(BaseStream):
         max_record_value = start_date
 
         with metrics.record_counter(self.tap_stream_id) as counter:
-            for record in self.get_records(start_date, state):
+            for record in self.get_records(start_date):
                 transformed_record = transformer.transform(record, stream_schema, stream_metadata)
                 record_replication_value = singer.utils.strptime_to_utc(transformed_record[self.replication_key])
                 if record_replication_value >= singer.utils.strptime_to_utc(max_record_value):
@@ -217,7 +216,7 @@ class FullTableStream(BaseStream):
         :return: State data in the form of a dictionary
         """
         with metrics.record_counter(self.tap_stream_id) as counter:
-            for record in self.get_records("", state):
+            for record in self.get_records():
                 transformed_record = transformer.transform(record, stream_schema, stream_metadata)
                 singer.write_record(self.tap_stream_id, transformed_record)
                 counter.increment()
@@ -244,7 +243,7 @@ class OrdersStream(IncrementalStream):
                           SellingApiRequestThrottledException,
                           max_tries=3,
                           on_backoff=log_backoff)
-    def get_records(self, start_date, state, is_parent=False):
+    def get_records(self, start_date, is_parent=False):
 
         credentials = self.get_credentials()
         marketplace = self.get_marketplace()
@@ -268,21 +267,18 @@ class OrdersStream(IncrementalStream):
                 paginate = True if next_token else False
 
                 if is_parent:
-                    yield from (item['AmazonOrderId'] for item
-                                in response.payload['Orders'])
+                    yield from ((item['AmazonOrderId'], item['LastUpdateDate'])
+                                for item in response.payload['Orders'])
                     continue
 
-                # transformed = (self.check_and_update_missing_fields(data, stream_schema)
-                #                for data in response.payload.get('Orders'))
-
-                # yield from transformed
                 yield from response.payload['Orders']
 
 
-# TODO: check if running Orders stream before OrderItems stream will affect the results
-class OrderItems(FullTableStream):
+class OrderItems(IncrementalStream):
     tap_stream_id = 'order_items'
     key_properties = ['AmazonOrderId', 'OrderItemId']
+    replication_key = 'OrderLastUpdateDate'
+    valid_replication_keys = ['OrderLastUpdateDate']
     parent = OrdersStream
 
     @backoff.on_exception(backoff.expo,
@@ -292,13 +288,14 @@ class OrderItems(FullTableStream):
     def get_order_items(self, client: Orders, order_id: str):
         return client.get_order_items(order_id=order_id).payload
 
-    def get_records(self, start_date: str, state: dict, is_parent: bool = False) -> list:
+    def get_records(self, start_date: str) -> list:
 
         credentials = self.get_credentials()
         marketplace = self.get_marketplace()
+        start_date = format_date(start_date)
 
         client = Orders(credentials=credentials, marketplace=marketplace)
-        for order_id in self.get_parent_data(state):
+        for order_id, date in self.get_parent_data(start_date):
             with metrics.http_request_timer(f'/orders/v0/orders/{order_id}/orderItems') as timer:
                 response = self.get_order_items(client, order_id)
                 timer.tags[metrics.Tag.http_status_code] = 200
@@ -306,7 +303,7 @@ class OrderItems(FullTableStream):
                 # Endpoint allows for 1 request per second
                 time.sleep(1)
 
-                order_items = flatten_order_items(response)
+                order_items = flatten_order_items(response, date)
 
                 yield from order_items
 

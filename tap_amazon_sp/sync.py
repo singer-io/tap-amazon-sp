@@ -5,24 +5,12 @@ from tap_amazon_sp.streams import STREAMS
 
 LOGGER = singer.get_logger()
 
-# TODO: implement better method of having priority streams run first
-def reorder_streams(selected_streams):
-    priority = ['order', 'order_items']
-
-    first = [stream for stream in selected_streams
-             if stream.tap_stream_id in priority]
-    second = [stream for stream in selected_streams
-             if stream.tap_stream_id not in priority]
-
-    return first + second
-
 
 def sync(config, state, catalog):
     """ Sync data from tap source """
 
     with Transformer() as transformer:
-        selected_streams = list(catalog.get_selected_streams(state))
-        for stream in reorder_streams(selected_streams):
+        for stream in catalog.get_selected_streams(state):
             tap_stream_id = stream.tap_stream_id
             stream_obj = STREAMS[tap_stream_id](config)
             stream_schema = stream.schema.to_dict()

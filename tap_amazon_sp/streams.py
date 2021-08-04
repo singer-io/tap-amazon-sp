@@ -203,8 +203,8 @@ class OrdersStream(IncrementalStream):
     replication_key = 'LastUpdateDate'
     valid_replication_keys = ['LastUpdateDate']
 
-    @lru_cache
     @staticmethod
+    @lru_cache
     def get_orders(client, start_date, next_token):
         return client.get_orders(LastUpdatedAfter=start_date,
                                  NextToken=next_token)
@@ -234,7 +234,7 @@ class OrdersStream(IncrementalStream):
                     raise e
 
                 next_token = response.next_token
-                paginate = next_token is None
+                paginate = True if next_token else False
 
                 if is_parent:
                     yield from ((item['AmazonOrderId'], item['LastUpdateDate'])
@@ -251,11 +251,11 @@ class OrderItems(IncrementalStream):
     valid_replication_keys = ['OrderLastUpdateDate']
     parent = OrdersStream
 
+    @staticmethod
     @backoff.on_exception(backoff.expo,
                           SellingApiRequestThrottledException,
                           max_tries=3,
                           on_backoff=log_backoff)
-    @staticmethod
     def get_order_items(client: Orders, order_id: str):
         return client.get_order_items(order_id=order_id).payload
 
@@ -315,7 +315,7 @@ class SalesStream(IncrementalStream):
                     raise e
 
                 next_token = response.next_token
-                paginate = next_token is None
+                paginate = True if next_token else False
 
                 for record in response.payload:
                     record.update({'retrieved': end_date})

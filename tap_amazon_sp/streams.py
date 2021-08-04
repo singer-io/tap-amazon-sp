@@ -308,38 +308,6 @@ class OrderItems(IncrementalStream):
                 yield from order_items
 
 
-# TODO: check if running Orders stream before Order stream will affect the resultsclass OrderItems(FullTableStream):
-class OrderStream(FullTableStream):
-    tap_stream_id = 'order'
-    key_properties = ['AmazonOrderId']
-    parent = OrdersStream
-
-    @backoff.on_exception(backoff.expo,
-                          SellingApiRequestThrottledException,
-                          max_tries=3,
-                          on_backoff=log_backoff)
-    def get_order(self, client: Orders, order_id: str):
-        return client.get_order(order_id=order_id)
-
-    def get_records(self, start_date: str, state: dict, is_parent: bool = False) -> list:
-
-        credentials = self.get_credentials()
-        marketplace = self.get_marketplace()
-
-        client = Orders(credentials=credentials, marketplace=marketplace)
-        for order_id in self.get_parent_data(state):
-            with metrics.http_request_timer(f'/orders/v0/orders/{order_id}') as timer:
-                response = self.get_order(client, order_id)
-                timer.tags[metrics.Tag.http_status_code] = 200
-
-                # Check headers for rate limit and sleep in between calls
-                sleep_time = calculate_sleep_time(response.headers)
-                LOGGER.info(f"sleeping for {round(sleep_time, 2)} seconds")
-                time.sleep(sleep_time)
-
-                yield response.payload
-
-
 class SalesStream(IncrementalStream):
     tap_stream_id = 'sales'
     key_properties = ['interval']
@@ -384,9 +352,7 @@ class SalesStream(IncrementalStream):
                 yield from response.payload
 
 
-
 STREAMS = {
-    'order': OrderStream,
     'orders': OrdersStream,
     'order_items': OrderItems,
     'sales': SalesStream,

@@ -11,8 +11,8 @@ from sp_api.base.exceptions import SellingApiRequestThrottledException
 from sp_api.base.marketplaces import Marketplaces
 from sp_api.base.sales_enum import Granularity
 
-from generate_schema import create_date_interval
-from tap_amazon_sp.helpers import flatten_order_items, format_date, log_backoff
+from tap_amazon_sp.helpers import (create_date_interval, flatten_order_items,
+                                   format_date, log_backoff)
 
 LOGGER = singer.get_logger()
 

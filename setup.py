@@ -15,7 +15,7 @@ setup(
     url="http://singer.io",
     classifiers=["Programming Language :: Python :: 3 :: Only"],
     py_modules=["tap_amazon_sp"],
-    install_requires=[,
+    install_requires=[
         'backoff==1.8.0',
         'singer-python==5.10.0'
     ],

@@ -2,12 +2,12 @@ import datetime
 import enum
 import time
 from functools import lru_cache
+from typing import List
 
 import backoff
 import singer
 from singer import Transformer, metrics
 from sp_api.api import Orders, Sales
-from sp_api.base import marketplaces
 from sp_api.base.exceptions import SellingApiRequestThrottledException
 from sp_api.base.marketplaces import Marketplaces
 from sp_api.base.sales_enum import Granularity
@@ -35,11 +35,12 @@ class BaseStream:
     def __init__(self, config: dict) -> None:
         self.config = config
 
-    def get_records(self, start_date: str, is_parent: bool = False) -> list:
+    def get_records(self, start_date: str, marketplace: str, is_parent: bool = False) -> list:
         """
         Returns a list of records for that stream.
 
-        :param stream_schema: The schema for the stream
+        :param start_date: The start date
+        :param marketplace: The Amazon SP marketplace
         :param is_parent: If true, may change the type of data
             that is returned for a child stream to consume
         :return: list of records
@@ -54,14 +55,14 @@ class BaseStream:
         """
         self.params = params
 
-    def get_parent_data(self, start_date: str = None) -> list:
+    def get_parent_data(self, start_date: str = None, marketplace: Marketplaces = Marketplaces.US) -> list:
         """
         Returns a list of records from the parent stream.
 
         :return: A list of records
         """
         parent = self.parent(self.config)
-        return parent.get_records(start_date, is_parent=True)
+        return parent.get_records(start_date, marketplace, is_parent=True)
 
     def get_credentials(self) -> dict:
         """
@@ -78,11 +79,11 @@ class BaseStream:
             'role_arn': self.config['role_arn'],
         }
 
-    def get_marketplace(self) -> enum:
+    def get_marketplaces(self) -> List[Marketplaces]:
         """
-        Retrieves marketplace enum. Defaults to US if no marketplace provided.
+        Retrieves marketplace enum list. Defaults to US if no marketplace provided.
 
-        :return: An enum for the marketplace to be used with the API
+        :return: A list of marketplace enums for the marketplace(s) to be used with the API
         """
         marketplaces = self.config.get('marketplaces')
         cleaned_marketplaces = []
@@ -154,20 +155,26 @@ class IncrementalStream(BaseStream):
         :param transformer: A singer Transformer object
         :return: State data in the form of a dictionary
         """
-        start_date = singer.get_bookmark(state, self.tap_stream_id, self.replication_key, self.config['start_date'])
-        max_record_value = start_date
+        marketplaces = self.get_marketplaces()
+        for marketplace in marketplaces:
+            start_date = singer.get_bookmark(state, self.tap_stream_id, marketplace.name, self.config['start_date'])
 
-        with metrics.record_counter(self.tap_stream_id) as counter:
-            for record in self.get_records(start_date):
-                transformed_record = transformer.transform(record, stream_schema, stream_metadata)
-                record_replication_value = singer.utils.strptime_to_utc(transformed_record[self.replication_key])
-                if record_replication_value >= singer.utils.strptime_to_utc(max_record_value):
-                    singer.write_record(self.tap_stream_id, transformed_record)
-                    counter.increment()
-                    max_record_value = record_replication_value.isoformat()
+            # Value in state will be in the form {replication_key: value}
+            if isinstance(start_date, dict):
+                start_date = start_date.get(self.replication_key)
+            max_record_value = start_date
 
-        state = singer.write_bookmark(state, self.tap_stream_id, self.replication_key, max_record_value)
-        singer.write_state(state)
+            with metrics.record_counter(self.tap_stream_id) as counter:
+                for record in self.get_records(start_date, marketplace):
+                    transformed_record = transformer.transform(record, stream_schema, stream_metadata)
+                    record_replication_value = singer.utils.strptime_to_utc(transformed_record[self.replication_key])
+                    if record_replication_value >= singer.utils.strptime_to_utc(max_record_value):
+                        singer.write_record(self.tap_stream_id, transformed_record)
+                        counter.increment()
+                        max_record_value = record_replication_value.isoformat()
+
+            state = singer.write_bookmark(state, self.tap_stream_id, marketplace.name, {self.replication_key: max_record_value})
+            singer.write_state(state)
         return state
 
 
@@ -219,38 +226,36 @@ class OrdersStream(IncrementalStream):
                           SellingApiRequestThrottledException,
                           max_tries=3,
                           on_backoff=log_backoff)
-    def get_records(self, start_date, is_parent=False):
+    def get_records(self, start_date, marketplace, is_parent=False):
 
         credentials = self.get_credentials()
-        marketplaces = self.get_marketplace()
         start_date = format_date(start_date)
 
-        for marketplace in marketplaces:
-            LOGGER.info(f"Getting records for marketplace: {marketplace}")
+        LOGGER.info(f"Getting records for marketplace: {marketplace.name}")
 
-            client = Orders(credentials=credentials, marketplace=marketplace)
-            paginate = True
-            next_token = None
+        client = Orders(credentials=credentials, marketplace=marketplace)
+        paginate = True
+        next_token = None
 
-            with metrics.http_request_timer('/orders/v0/orders') as timer:
-                while paginate:
-                    try:
-                        response = self.get_orders(client, start_date, next_token)
-                        timer.tags[metrics.Tag.http_status_code] = 200
-                    except SellingApiRequestThrottledException as e:
-                        timer.tags[metrics.Tag.http_status_code] = 429
+        with metrics.http_request_timer('/orders/v0/orders') as timer:
+            while paginate:
+                try:
+                    response = self.get_orders(client, start_date, next_token)
+                    timer.tags[metrics.Tag.http_status_code] = 200
+                except SellingApiRequestThrottledException as e:
+                    timer.tags[metrics.Tag.http_status_code] = 429
 
-                        raise e
+                    raise e
 
-                    next_token = response.next_token
-                    paginate = True if next_token else False
+                next_token = response.next_token
+                paginate = True if next_token else False
 
-                    if is_parent:
-                        yield from ((item['AmazonOrderId'], item['LastUpdateDate'])
-                                    for item in response.payload['Orders'])
-                        continue
+                if is_parent:
+                    yield from ((item['AmazonOrderId'], item['LastUpdateDate'])
+                                for item in response.payload['Orders'])
+                    continue
 
-                    yield from response.payload['Orders']
+                yield from response.payload['Orders']
 
 
 class OrderItems(IncrementalStream):
@@ -268,27 +273,25 @@ class OrderItems(IncrementalStream):
     def get_order_items(client: Orders, order_id: str):
         return client.get_order_items(order_id=order_id).payload
 
-    def get_records(self, start_date: str) -> list:
+    def get_records(self, start_date: str, marketplace) -> list:
 
         credentials = self.get_credentials()
-        marketplaces = self.get_marketplace()
         start_date = format_date(start_date)
 
-        for marketplace in marketplaces:
-            LOGGER.info(f"Getting records for marketplace: {marketplace}")
+        LOGGER.info(f"Getting records for marketplace: {marketplace.name}")
 
-            client = Orders(credentials=credentials, marketplace=marketplace)
-            for order_id, date in self.get_parent_data(start_date):
-                with metrics.http_request_timer(f'/orders/v0/orders/{order_id}/orderItems') as timer:
-                    response = self.get_order_items(client, order_id)
-                    timer.tags[metrics.Tag.http_status_code] = 200
+        client = Orders(credentials=credentials, marketplace=marketplace)
+        for order_id, date in self.get_parent_data(start_date, marketplace):
+            with metrics.http_request_timer(f'/orders/v0/orders/{order_id}/orderItems') as timer:
+                response = self.get_order_items(client, order_id)
+                timer.tags[metrics.Tag.http_status_code] = 200
 
-                    # Endpoint allows for 1 request per second
-                    time.sleep(1)
+                # Endpoint allows for 1 request per second
+                time.sleep(1)
 
-                    order_items = flatten_order_items(response, date)
+                order_items = flatten_order_items(response, date)
 
-                    yield from order_items
+                yield from order_items
 
 
 class SalesStream(IncrementalStream):
@@ -301,41 +304,39 @@ class SalesStream(IncrementalStream):
                           SellingApiRequestThrottledException,
                           max_tries=3,
                           on_backoff=log_backoff)
-    def get_records(self, start_date, is_parent=False):
+    def get_records(self, start_date, marketplace, is_parent=False):
 
         credentials = self.get_credentials()
-        marketplaces = self.get_marketplace()
         granularity = self.get_granularity()
         start_date = format_date(start_date)
         start_date_dt = singer.utils.strptime_to_utc(start_date)
         end_date_dt = datetime.datetime.utcnow()
         end_date = end_date_dt.isoformat()
 
-        for marketplace in marketplaces:
-            LOGGER.info(f"Getting records for marketplace: {marketplace}")
+        LOGGER.info(f"Getting records for marketplace: {marketplace}")
 
-            client = Sales(credentials=credentials, marketplace=marketplace)
-            paginate = True
-            next_token = None
-            interval = create_date_interval(start_date_dt, end_date_dt)
+        client = Sales(credentials=credentials, marketplace=marketplace)
+        paginate = True
+        next_token = None
+        interval = create_date_interval(start_date_dt, end_date_dt)
 
-            with metrics.http_request_timer('/sales/v1/orderMetrics') as timer:
-                while paginate:
-                    try:
-                        response = client.get_order_metrics(interval=interval, granularity=granularity)
-                        timer.tags[metrics.Tag.http_status_code] = 200
-                    except SellingApiRequestThrottledException as e:
-                        timer.tags[metrics.Tag.http_status_code] = 429
+        with metrics.http_request_timer('/sales/v1/orderMetrics') as timer:
+            while paginate:
+                try:
+                    response = client.get_order_metrics(interval=interval, granularity=granularity)
+                    timer.tags[metrics.Tag.http_status_code] = 200
+                except SellingApiRequestThrottledException as e:
+                    timer.tags[metrics.Tag.http_status_code] = 429
 
-                        raise e
+                    raise e
 
-                    next_token = response.next_token
-                    paginate = True if next_token else False
+                next_token = response.next_token
+                paginate = True if next_token else False
 
-                    for record in response.payload:
-                        record.update({'retrieved': end_date})
+                for record in response.payload:
+                    record.update({'retrieved': end_date})
 
-                    yield from response.payload
+                yield from response.payload
 
 
 STREAMS = {

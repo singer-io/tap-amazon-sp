@@ -88,11 +88,14 @@ class BaseStream:
         marketplaces = self.config.get('marketplaces')
         cleaned_marketplaces = []
         if marketplaces:
-            for marketplace in marketplaces:
+            marketplaces_arr = marketplaces.strip().split(" ")
+            for marketplace in marketplaces_arr:
                 try:
                     marketplace = marketplace.upper()
                     if hasattr(Marketplaces, marketplace):
                         cleaned_marketplaces.append(getattr(Marketplaces, marketplace))
+                    else:
+                        raise Exception(f"Invalid marketplace {marketplace} provided")
                 except Exception as e:
                     # If marketplace not part of enum, log message and throw error
                     valid_marketplaces = set()

@@ -8,7 +8,7 @@ with open(join(ROOT_DIR, "README.md"), encoding="utf-8") as f:
 
 setup(
     name="tap-amazon-sp",
-    version="0.1.0",
+    version="0.2.0",
     description="Singer ETL tap for extracting data from the Amazon Selling Partner API",
     long_description=readme,
     author="Stitch",

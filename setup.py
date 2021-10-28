@@ -1,8 +1,9 @@
 from setuptools import find_packages, setup
+from os.path import abspath, dirname, join
 
-requirements_file = "requirements.txt"
+ROOT_DIR = abspath(dirname(__file__))
 
-with open("README.md") as f:
+with open(join(ROOT_DIR, "README.md"), encoding="utf-8") as f:
     readme = f.read()
 
 setup(
@@ -14,7 +15,11 @@ setup(
     url="http://singer.io",
     classifiers=["Programming Language :: Python :: 3 :: Only"],
     py_modules=["tap_amazon_sp"],
-    install_requires=open(requirements_file).readlines(),
+    install_requires=[
+        'backoff==1.8.0',
+        'singer-python==5.10.0',
+        'python-amazon-sp-api==0.5.3'
+    ],
     entry_points="""
     [console_scripts]
     tap-amazon-sp=tap_amazon_sp:main

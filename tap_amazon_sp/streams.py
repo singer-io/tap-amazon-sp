@@ -258,7 +258,7 @@ class OrdersStream(IncrementalStream):
                                 for item in response.payload['Orders'])
                     continue
 
-                yield from response.payload['Orders']
+                return response.payload['Orders']
 
 
 class OrderItems(IncrementalStream):
@@ -294,7 +294,7 @@ class OrderItems(IncrementalStream):
 
                 order_items = flatten_order_items(response, date)
 
-                yield from order_items
+                return order_items
 
 
 class SalesStream(IncrementalStream):
@@ -339,7 +339,7 @@ class SalesStream(IncrementalStream):
                 for record in response.payload:
                     record.update({'retrieved': end_date})
 
-                yield from response.payload
+                return response.payload
 
 
 STREAMS = {

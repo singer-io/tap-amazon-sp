@@ -212,7 +212,7 @@ class FullTableStream(BaseStream):
 
 class OrdersStream(IncrementalStream):
     """
-    Gets records for a sample stream.
+    Gets records for orders stream.
     """
     tap_stream_id = 'orders'
     key_properties = ['AmazonOrderId']
@@ -224,6 +224,8 @@ class OrdersStream(IncrementalStream):
     @backoff.on_exception(backoff.expo,
                           SellingApiRequestThrottledException,
                           max_tries=3,
+                          base=3,
+                          factor=20,
                           on_backoff=log_backoff)
     def get_orders(client, start_date, next_token, timer):
 
@@ -264,6 +266,9 @@ class OrdersStream(IncrementalStream):
 
 
 class OrderItems(IncrementalStream):
+    """
+    Gets records for order items stream.
+    """
     tap_stream_id = 'order_items'
     key_properties = ['AmazonOrderId', 'OrderItemId']
     replication_key = 'OrderLastUpdateDate'
@@ -274,6 +279,8 @@ class OrderItems(IncrementalStream):
     @backoff.on_exception(backoff.expo,
                           SellingApiRequestThrottledException,
                           max_tries=3,
+                          base=3,
+                          factor=5,
                           on_backoff=log_backoff)
     def get_order_items(client: Orders, order_id: str):
         return client.get_order_items(order_id=order_id).payload
@@ -300,6 +307,9 @@ class OrderItems(IncrementalStream):
 
 
 class SalesStream(IncrementalStream):
+    """
+    Gets records for sales stream.
+    """
     tap_stream_id = 'sales'
     key_properties = ['interval']
     replication_key = 'retrieved'

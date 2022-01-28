@@ -6,6 +6,6 @@
   "aws_secret_key": "abc123",
   "role_arn": "arn:aws:iam::123456:role/some_role",
   "start_date": "2021-08-03T16:41:14+00:00",
-  "marketplace": "GB",
+  "marketplaces": "GB US",
   "sales_data_granularity": "HOUR"
 }

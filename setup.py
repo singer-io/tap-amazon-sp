@@ -17,8 +17,8 @@ setup(
     py_modules=["tap_amazon_sp"],
     install_requires=[
         'backoff==1.8.0',
-        'singer-python==5.10.0',
-        'python-amazon-sp-api==0.5.3'
+        'singer-python==5.12.2',
+        'python-amazon-sp-api==0.12.4'
     ],
     entry_points="""
     [console_scripts]

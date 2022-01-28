@@ -212,7 +212,7 @@ class FullTableStream(BaseStream):
 
 class OrdersStream(IncrementalStream):
     """
-    Gets records for a sample stream.
+    Gets records for orders stream.
     """
     tap_stream_id = 'orders'
     key_properties = ['AmazonOrderId']
@@ -221,14 +221,24 @@ class OrdersStream(IncrementalStream):
 
     @staticmethod
     @lru_cache
-    def get_orders(client, start_date, next_token):
-        return client.get_orders(LastUpdatedAfter=start_date,
-                                 NextToken=next_token)
-
     @backoff.on_exception(backoff.expo,
                           SellingApiRequestThrottledException,
                           max_tries=3,
+                          base=3,
+                          factor=20,
                           on_backoff=log_backoff)
+    def get_orders(client, start_date, next_token, timer):
+
+        try:
+            response = client.get_orders(LastUpdatedAfter=start_date,
+                                 NextToken=next_token)
+            timer.tags[metrics.Tag.http_status_code] = 200
+            return response
+        except SellingApiRequestThrottledException as e:
+            timer.tags[metrics.Tag.http_status_code] = 429
+
+            raise e
+
     def get_records(self, start_date, marketplace, is_parent=False):
 
         credentials = self.get_credentials()
@@ -242,13 +252,7 @@ class OrdersStream(IncrementalStream):
 
         with metrics.http_request_timer('/orders/v0/orders') as timer:
             while paginate:
-                try:
-                    response = self.get_orders(client, start_date, next_token)
-                    timer.tags[metrics.Tag.http_status_code] = 200
-                except SellingApiRequestThrottledException as e:
-                    timer.tags[metrics.Tag.http_status_code] = 429
-
-                    raise e
+                response = self.get_orders(client, start_date, next_token, timer)
 
                 next_token = response.next_token
                 paginate = True if next_token else False
@@ -258,10 +262,13 @@ class OrdersStream(IncrementalStream):
                                 for item in response.payload['Orders'])
                     continue
 
-                return response.payload['Orders']
+                yield from response.payload['Orders']
 
 
 class OrderItems(IncrementalStream):
+    """
+    Gets records for order items stream.
+    """
     tap_stream_id = 'order_items'
     key_properties = ['AmazonOrderId', 'OrderItemId']
     replication_key = 'OrderLastUpdateDate'
@@ -272,6 +279,8 @@ class OrderItems(IncrementalStream):
     @backoff.on_exception(backoff.expo,
                           SellingApiRequestThrottledException,
                           max_tries=3,
+                          base=3,
+                          factor=5,
                           on_backoff=log_backoff)
     def get_order_items(client: Orders, order_id: str):
         return client.get_order_items(order_id=order_id).payload
@@ -294,10 +303,13 @@ class OrderItems(IncrementalStream):
 
                 order_items = flatten_order_items(response, date)
 
-                return order_items
+                yield from order_items
 
 
 class SalesStream(IncrementalStream):
+    """
+    Gets records for sales stream.
+    """
     tap_stream_id = 'sales'
     key_properties = ['interval']
     replication_key = 'retrieved'
@@ -307,6 +319,16 @@ class SalesStream(IncrementalStream):
                           SellingApiRequestThrottledException,
                           max_tries=3,
                           on_backoff=log_backoff)
+    def get_sales_data(self, client, interval, granularity, timer):
+        try:
+            response = client.get_order_metrics(interval=interval, granularity=granularity)
+            timer.tags[metrics.Tag.http_status_code] = 200
+            return response
+        except SellingApiRequestThrottledException as e:
+            timer.tags[metrics.Tag.http_status_code] = 429
+
+            raise e
+
     def get_records(self, start_date, marketplace, is_parent=False):
 
         credentials = self.get_credentials()
@@ -325,13 +347,7 @@ class SalesStream(IncrementalStream):
 
         with metrics.http_request_timer('/sales/v1/orderMetrics') as timer:
             while paginate:
-                try:
-                    response = client.get_order_metrics(interval=interval, granularity=granularity)
-                    timer.tags[metrics.Tag.http_status_code] = 200
-                except SellingApiRequestThrottledException as e:
-                    timer.tags[metrics.Tag.http_status_code] = 429
-
-                    raise e
+                response = self.get_sales_data(client, interval, granularity, timer)
 
                 next_token = response.next_token
                 paginate = True if next_token else False
@@ -339,7 +355,7 @@ class SalesStream(IncrementalStream):
                 for record in response.payload:
                     record.update({'retrieved': end_date})
 
-                return response.payload
+                yield from response.payload
 
 
 STREAMS = {

@@ -61,7 +61,7 @@ def flatten_order_items(response: dict, date_to_add: str) -> List[dict]:
     order_items = []
     amazon_order_id = response.get("AmazonOrderId")
 
-    for order_item in response['OrderItems']:
+    for order_item in response.get('OrderItems', []):
         order_item['AmazonOrderId'] = amazon_order_id
         order_item['OrderLastUpdateDate'] = date_to_add
         order_items.append(order_item)

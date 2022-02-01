@@ -176,6 +176,9 @@ class IncrementalStream(BaseStream):
                         counter.increment()
                         max_record_value = record_replication_value.isoformat()
 
+                        state = singer.write_bookmark(state, self.tap_stream_id, marketplace.name, {self.replication_key: max_record_value})
+                        singer.write_state(state)
+
             state = singer.write_bookmark(state, self.tap_stream_id, marketplace.name, {self.replication_key: max_record_value})
             singer.write_state(state)
         return state

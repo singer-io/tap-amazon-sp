@@ -176,6 +176,9 @@ class IncrementalStream(BaseStream):
                         counter.increment()
                         max_record_value = record_replication_value.isoformat()
 
+                        state = singer.write_bookmark(state, self.tap_stream_id, marketplace.name, {self.replication_key: max_record_value})
+                        singer.write_state(state)
+
             state = singer.write_bookmark(state, self.tap_stream_id, marketplace.name, {self.replication_key: max_record_value})
             singer.write_state(state)
         return state
@@ -223,7 +226,7 @@ class OrdersStream(IncrementalStream):
     @lru_cache
     @backoff.on_exception(backoff.expo,
                           SellingApiRequestThrottledException,
-                          max_tries=3,
+                          max_tries=5,
                           base=3,
                           factor=20,
                           on_backoff=log_backoff)
@@ -278,9 +281,9 @@ class OrderItems(IncrementalStream):
     @staticmethod
     @backoff.on_exception(backoff.expo,
                           SellingApiRequestThrottledException,
-                          max_tries=3,
+                          max_tries=5,
                           base=3,
-                          factor=5,
+                          factor=10,
                           on_backoff=log_backoff)
     def get_order_items(client: Orders, order_id: str):
         return client.get_order_items(order_id=order_id).payload

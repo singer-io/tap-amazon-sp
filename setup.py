@@ -8,7 +8,7 @@ with open(join(ROOT_DIR, "README.md"), encoding="utf-8") as f:
 
 setup(
     name="tap-amazon-sp",
-    version="0.1.4",
+    version="0.1.5",
     description="Singer ETL tap for extracting data from the Amazon Selling Partner API",
     long_description=readme,
     author="Stitch",
@@ -18,7 +18,7 @@ setup(
     install_requires=[
         'backoff==1.8.0',
         'singer-python==5.12.2',
-        'python-amazon-sp-api==0.12.4'
+        'python-amazon-sp-api==0.18.2'
     ],
     entry_points="""
     [console_scripts]

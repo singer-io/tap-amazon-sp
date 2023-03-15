@@ -13,7 +13,7 @@ from sp_api.base.marketplaces import Marketplaces
 from sp_api.base.sales_enum import Granularity
 
 from tap_amazon_sp.helpers import (create_date_interval, flatten_order_items,
-                                   format_date, log_backoff)
+                                   format_date, log_backoff, calculate_sleep_time)
 
 LOGGER = singer.get_logger()
 
@@ -286,7 +286,8 @@ class OrderItems(IncrementalStream):
                           factor=10,
                           on_backoff=log_backoff)
     def get_order_items(client: Orders, order_id: str):
-        return client.get_order_items(order_id=order_id).payload
+        response = client.get_order_items(order_id=order_id)
+        return response.payload, response.headers
 
     def get_records(self, start_date: str, marketplace) -> list:
 
@@ -298,11 +299,11 @@ class OrderItems(IncrementalStream):
         client = Orders(credentials=credentials, marketplace=marketplace)
         for order_id, date in self.get_parent_data(start_date, marketplace):
             with metrics.http_request_timer(f'/orders/v0/orders/{order_id}/orderItems') as timer:
-                response = self.get_order_items(client, order_id)
+                response, headers = self.get_order_items(client, order_id)
                 timer.tags[metrics.Tag.http_status_code] = 200
 
-                # Endpoint allows for 1 request per second
-                time.sleep(1)
+                sleep_time = calculate_sleep_time(headers)
+                time.sleep(sleep_time)
 
                 order_items = flatten_order_items(response, date)
 

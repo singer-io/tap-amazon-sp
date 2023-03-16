@@ -358,6 +358,50 @@ class OrderBuyerInfo(IncrementalStream):
 
                 yield from [response]
 
+class OrderAddress(IncrementalStream):
+    """
+    Gets records for order buyer info stream.
+    """
+    tap_stream_id = 'order_address'
+    # key_properties = ['AmazonOrderId']
+    replication_key = 'OrderLastUpdateDate'
+    valid_replication_keys = ['OrderLastUpdateDate']
+    parent = OrdersStream
+
+    @staticmethod
+    @backoff.on_exception(backoff.expo,
+                          SellingApiRequestThrottledException,
+                          max_tries=5,
+                          base=3,
+                          factor=10,
+                          on_backoff=log_backoff)
+    def get_order_address(client: Orders, order_id: str):
+        response = client.get_order_address(order_id=order_id)
+        return response.payload, response.headers
+
+    def get_records(self, start_date: str, end_date: str, marketplace) -> list:
+
+        credentials = self.get_credentials()
+        start_date = format_date(start_date)
+        if end_date:
+            end_date = format_date(end_date)
+
+        LOGGER.info(f"Getting records for marketplace: {marketplace.name}")
+
+        client = Orders(credentials=credentials, marketplace=marketplace)
+        for order_id, date in self.get_parent_data(start_date, end_date, marketplace):
+            with metrics.http_request_timer(f'/orders/v0/orders/{order_id}/address') as timer:
+                response, headers = self.get_order_address(client, order_id)
+                timer.tags[metrics.Tag.http_status_code] = 200
+                
+                # Adding dynamic sleep as per rate limit from Amazon
+                sleep_time = calculate_sleep_time(headers)
+                time.sleep(sleep_time)
+
+                response['OrderLastUpdateDate'] = date
+
+                yield from [response]
+                
 class SalesStream(IncrementalStream):
     """
     Gets records for sales stream.
@@ -414,5 +458,6 @@ STREAMS = {
     'orders': OrdersStream,
     'order_items': OrderItems,
     'order_buyer_info': OrderBuyerInfo,
+    'order_address': OrderAddress,
     'sales': SalesStream,
 }

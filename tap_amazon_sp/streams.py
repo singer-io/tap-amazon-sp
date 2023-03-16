@@ -35,7 +35,7 @@ class BaseStream:
     def __init__(self, config: dict) -> None:
         self.config = config
 
-    def get_records(self, start_date: str, marketplace: str, is_parent: bool = False) -> list:
+    def get_records(self, start_date: str, end_date: str, marketplace: str, is_parent: bool = False) -> list:
         """
         Returns a list of records for that stream.
 
@@ -55,14 +55,14 @@ class BaseStream:
         """
         self.params = params
 
-    def get_parent_data(self, start_date: str = None, marketplace: Marketplaces = Marketplaces.US) -> list:
+    def get_parent_data(self, start_date: str = None, end_date: str = None, marketplace: Marketplaces = Marketplaces.US) -> list:
         """
         Returns a list of records from the parent stream.
 
         :return: A list of records
         """
         parent = self.parent(self.config)
-        return parent.get_records(start_date, marketplace, is_parent=True)
+        return parent.get_records(start_date, end_date, marketplace, is_parent=True)
 
     def get_credentials(self) -> dict:
         """
@@ -161,6 +161,7 @@ class IncrementalStream(BaseStream):
         marketplaces = self.get_marketplaces()
         for marketplace in marketplaces:
             start_date = singer.get_bookmark(state, self.tap_stream_id, marketplace.name, self.config['start_date'])
+            end_date = self.config['end_date']
 
             # Value in state will be in the form {replication_key: value}
             if isinstance(start_date, dict):
@@ -168,7 +169,7 @@ class IncrementalStream(BaseStream):
             max_record_value = start_date
 
             with metrics.record_counter(self.tap_stream_id) as counter:
-                for record in self.get_records(start_date, marketplace):
+                for record in self.get_records(start_date, end_date, marketplace):
                     transformed_record = transformer.transform(record, stream_schema, stream_metadata)
                     record_replication_value = singer.utils.strptime_to_utc(transformed_record[self.replication_key])
                     if record_replication_value >= singer.utils.strptime_to_utc(max_record_value):
@@ -242,10 +243,12 @@ class OrdersStream(IncrementalStream):
 
             raise e
 
-    def get_records(self, start_date, marketplace, is_parent=False):
+    def get_records(self, start_date, end_date, marketplace, is_parent=False):
 
         credentials = self.get_credentials()
         start_date = format_date(start_date)
+        if end_date:
+            end_date = format_date(end_date)
 
         LOGGER.info(f"Getting records for marketplace: {marketplace.name}")
 
@@ -289,15 +292,17 @@ class OrderItems(IncrementalStream):
         response = client.get_order_items(order_id=order_id)
         return response.payload, response.headers
 
-    def get_records(self, start_date: str, marketplace) -> list:
+    def get_records(self, start_date: str, end_date: str, marketplace) -> list:
 
         credentials = self.get_credentials()
         start_date = format_date(start_date)
+        if end_date:
+            end_date = format_date(end_date)
 
         LOGGER.info(f"Getting records for marketplace: {marketplace.name}")
 
         client = Orders(credentials=credentials, marketplace=marketplace)
-        for order_id, date in self.get_parent_data(start_date, marketplace):
+        for order_id, date in self.get_parent_data(start_date, end_date, marketplace):
             with metrics.http_request_timer(f'/orders/v0/orders/{order_id}/orderItems') as timer:
                 response, headers = self.get_order_items(client, order_id)
                 timer.tags[metrics.Tag.http_status_code] = 200
@@ -309,6 +314,49 @@ class OrderItems(IncrementalStream):
 
                 yield from order_items
 
+class OrderBuyerInfo(IncrementalStream):
+    """
+    Gets records for order buyer info stream.
+    """
+    tap_stream_id = 'order_buyer_info'
+    # key_properties = ['AmazonOrderId']
+    replication_key = 'OrderLastUpdateDate'
+    valid_replication_keys = ['OrderLastUpdateDate']
+    parent = OrdersStream
+
+    @staticmethod
+    @backoff.on_exception(backoff.expo,
+                          SellingApiRequestThrottledException,
+                          max_tries=5,
+                          base=3,
+                          factor=10,
+                          on_backoff=log_backoff)
+    def get_order_buyer_info(client: Orders, order_id: str):
+        response = client.get_order_buyer_info(order_id=order_id)
+        return response.payload, response.headers
+
+    def get_records(self, start_date: str, end_date: str, marketplace) -> list:
+
+        credentials = self.get_credentials()
+        start_date = format_date(start_date)
+        if end_date:
+            end_date = format_date(end_date)
+
+        LOGGER.info(f"Getting records for marketplace: {marketplace.name}")
+
+        client = Orders(credentials=credentials, marketplace=marketplace)
+        for order_id, date in self.get_parent_data(start_date, end_date, marketplace):
+            with metrics.http_request_timer(f'/orders/v0/orders/{order_id}/buyerInfo') as timer:
+                response, headers = self.get_order_buyer_info(client, order_id)
+                timer.tags[metrics.Tag.http_status_code] = 200
+
+                # Adding dynamic sleep as per rate limit from Amazon
+                sleep_time = calculate_sleep_time(headers)
+                time.sleep(sleep_time)
+
+                response['OrderLastUpdateDate'] = date
+
+                yield from [response]
 
 class SalesStream(IncrementalStream):
     """
@@ -365,5 +413,6 @@ class SalesStream(IncrementalStream):
 STREAMS = {
     'orders': OrdersStream,
     'order_items': OrderItems,
+    'order_buyer_info': OrderBuyerInfo,
     'sales': SalesStream,
 }

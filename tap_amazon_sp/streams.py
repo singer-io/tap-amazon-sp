@@ -276,6 +276,48 @@ class OrdersStreamFullTable(FullTableStream):
 
                 yield from response.payload['Orders']
 
+class OrderItemsFullTable(FullTableStream):
+    """
+    Gets records for order items stream.
+    """
+    tap_stream_id = 'order_items'
+    key_properties = ['AmazonOrderId', 'OrderItemId']
+    replication_key = 'OrderLastUpdateDate'
+    valid_replication_keys = ['OrderLastUpdateDate']
+    parent = OrdersStreamFullTable
+
+    @staticmethod
+    @backoff.on_exception(backoff.expo,
+                          SellingApiRequestThrottledException,
+                          max_tries=5,
+                          base=3,
+                          factor=10,
+                          on_backoff=log_backoff)
+    def get_order_items(client: Orders, order_id: str):
+        response = client.get_order_items(order_id=order_id)
+        return response.payload, response.headers
+
+    def get_records(self, start_date: str, end_date: str, marketplace) -> list:
+
+        credentials = self.get_credentials()
+        start_date = format_date(start_date)
+        if end_date:
+            end_date = format_date(end_date)
+
+        LOGGER.info(f"Getting records for marketplace: {marketplace.name}")
+
+        client = Orders(credentials=credentials, marketplace=marketplace)
+        for order_id, date in self.get_parent_data(start_date, end_date, marketplace):
+            with metrics.http_request_timer(f'/orders/v0/orders/{order_id}/orderItems') as timer:
+                response, headers = self.get_order_items(client, order_id)
+                timer.tags[metrics.Tag.http_status_code] = 200
+
+                sleep_time = calculate_sleep_time(headers)
+                time.sleep(sleep_time)
+
+                order_items = flatten_order_items(response, date)
+
+                yield from order_items
 
 class OrdersStream(IncrementalStream):
     """
@@ -534,6 +576,7 @@ def StreamClassSelector(config, stream):
 
     FULL_TABLE_STREAMS = {
         'orders': OrdersStreamFullTable,
+        'order_items': OrderItemsFullTable,
     }
 
     if stream.replication_method == 'FULL_TABLE':

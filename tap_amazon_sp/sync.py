@@ -1,7 +1,7 @@
 import singer
 from singer import Transformer, metadata
 
-from tap_amazon_sp.streams import STREAMS
+from tap_amazon_sp.streams import StreamClassSelector
 
 LOGGER = singer.get_logger()
 
@@ -12,7 +12,7 @@ def sync(config, state, catalog):
     with Transformer() as transformer:
         for stream in catalog.get_selected_streams(state):
             tap_stream_id = stream.tap_stream_id
-            stream_obj = STREAMS[tap_stream_id](config)
+            stream_obj = StreamClassSelector(config, stream)
             stream_schema = stream.schema.to_dict()
             stream_metadata = metadata.to_map(stream.metadata)
 

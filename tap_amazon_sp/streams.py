@@ -204,14 +204,77 @@ class FullTableStream(BaseStream):
         :param transformer: A singer Transformer object
         :return: State data in the form of a dictionary
         """
-        with metrics.record_counter(self.tap_stream_id) as counter:
-            for record in self.get_records():
-                transformed_record = transformer.transform(record, stream_schema, stream_metadata)
-                singer.write_record(self.tap_stream_id, transformed_record)
-                counter.increment()
-
+        marketplaces = self.get_marketplaces()
+        for marketplace in marketplaces:
+            start_date = self.config['start_date']
+            end_date = self.config['end_date']
+            with metrics.record_counter(self.tap_stream_id) as counter:
+                for record in self.get_records(start_date, end_date, marketplace):
+                    transformed_record = transformer.transform(record, stream_schema, stream_metadata)
+                    singer.write_record(self.tap_stream_id, transformed_record)
+                    counter.increment()
         singer.write_state(state)
         return state
+
+class OrdersStreamFullTable(FullTableStream):
+    """
+    Gets records for orders stream.
+    """
+    tap_stream_id = 'orders'
+    key_properties = ['AmazonOrderId']
+    replication_key = 'PurchaseDate'
+    valid_replication_keys = ['PurchaseDate']
+
+    @staticmethod
+    @lru_cache
+    @backoff.on_exception(backoff.expo,
+                          SellingApiRequestThrottledException,
+                          max_tries=5,
+                          base=3,
+                          factor=20,
+                          on_backoff=log_backoff)
+    def get_orders(client, start_date, next_token, timer, end_date=None):
+
+        try:
+            if not end_date:
+                response = client.get_orders(CreatedAfter=start_date,
+                                 NextToken=next_token)
+            else:
+                response = client.get_orders(CreatedAfter=start_date, CreatedBefore=end_date,
+                                 NextToken=next_token)
+            timer.tags[metrics.Tag.http_status_code] = 200
+            return response
+        except SellingApiRequestThrottledException as e:
+            timer.tags[metrics.Tag.http_status_code] = 429
+
+            raise e
+
+    def get_records(self, start_date, end_date, marketplace, is_parent=False):
+
+        credentials = self.get_credentials()
+        start_date = format_date(start_date)
+        if end_date:
+            end_date = format_date(end_date)
+
+        LOGGER.info(f"Getting records for marketplace: {marketplace.name}")
+
+        client = Orders(credentials=credentials, marketplace=marketplace)
+        paginate = True
+        next_token = None
+
+        with metrics.http_request_timer('/orders/v0/orders') as timer:
+            while paginate:
+                response = self.get_orders(client, start_date, next_token, timer, end_date=end_date)
+
+                next_token = response.next_token
+                paginate = True if next_token else False
+
+                if is_parent:
+                    yield from ((item['AmazonOrderId'], item['LastUpdateDate'])
+                                for item in response.payload['Orders'])
+                    continue
+
+                yield from response.payload['Orders']
 
 
 class OrdersStream(IncrementalStream):
@@ -465,3 +528,15 @@ STREAMS = {
     'order_address': OrderAddress,
     'sales': SalesStream,
 }
+
+def StreamClassSelector(config, stream):
+    INCREMENTAL_STREAMS = STREAMS
+
+    FULL_TABLE_STREAMS = {
+        'orders': OrdersStreamFullTable,
+    }
+
+    if stream.replication_method == 'FULL_TABLE':
+        return FULL_TABLE_STREAMS[stream.tap_stream_id](config)
+    elif stream.replication_method == 'INCREMENTAL':
+        return INCREMENTAL_STREAMS[stream.tap_stream_id](config)

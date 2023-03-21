@@ -231,10 +231,14 @@ class OrdersStream(IncrementalStream):
                           base=3,
                           factor=20,
                           on_backoff=log_backoff)
-    def get_orders(client, start_date, next_token, timer):
+    def get_orders(client, start_date, next_token, timer, end_date=None):
 
         try:
-            response = client.get_orders(LastUpdatedAfter=start_date,
+            if not end_date:
+                response = client.get_orders(LastUpdatedAfter=start_date,
+                                 NextToken=next_token)
+            else:
+                response = client.get_orders(LastUpdatedAfter=start_date, LastUpdatedBefore=end_date,
                                  NextToken=next_token)
             timer.tags[metrics.Tag.http_status_code] = 200
             return response
@@ -258,7 +262,7 @@ class OrdersStream(IncrementalStream):
 
         with metrics.http_request_timer('/orders/v0/orders') as timer:
             while paginate:
-                response = self.get_orders(client, start_date, next_token, timer)
+                response = self.get_orders(client, start_date, next_token, timer, end_date=end_date)
 
                 next_token = response.next_token
                 paginate = True if next_token else False

@@ -18,7 +18,7 @@ setup(
     install_requires=[
         'backoff==1.8.0',
         'singer-python==5.12.2',
-        'python-amazon-sp-api==0.12.4'
+        'python-amazon-sp-api==1.5.0'
     ],
     entry_points="""
     [console_scripts]
